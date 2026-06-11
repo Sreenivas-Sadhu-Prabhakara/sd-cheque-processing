@@ -1,0 +1,14 @@
+apiVersion: v2
+name: sd-cheque-processing
+description: "BIAN Service Domain: Cheque Processing (Process pattern, Operations and Execution)"
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - bian
+  - process
+annotations:
+  bian/business-area: "Operations and Execution"
+  bian/business-domain: "Payments"
+  bian/asset-type: "Cheque Transaction"
+  bian/control-record: "Cheque Transaction Procedure"
