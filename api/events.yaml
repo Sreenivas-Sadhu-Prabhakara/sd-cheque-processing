@@ -1,0 +1,17 @@
+# Event contract — owned by THIS repo. Topic catalog: bian-platform/platform-infra/kafka/topics.yaml
+service: sd-cheque-processing
+publishes:
+  - topic: bian.cheques.lifecycle
+    events:
+      - type: cheque.lodged          # FRAUD FEED — high-value lodgements are a fraud signal
+        payload: [chequeId, chequeNumber, drawerAccountRef, beneficiaryAccountRef, amountMinor, currency]
+      - type: cheque.presented
+        payload: [chequeId]
+      - type: cheque.cleared         # FLAGSHIP PAYMENTS FLOW — the beneficiary credit instruction,
+                                     # consumed by sd-current-account / sd-savings-account (cheque-credit)
+        payload: [chequeId, beneficiaryAccountRef, amountMinor, currency, reference]
+      - type: cheque.returned
+        payload: [chequeId, reason, beneficiaryAccountRef]
+      - type: cheque.stopped
+        payload: [chequeId]
+consumes: []   # Phase 2b: drawer-account funds check before clearance (sd-current-account)

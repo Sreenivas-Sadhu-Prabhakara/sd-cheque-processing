@@ -1,8 +1,8 @@
 package com.bank.bian.chequeprocessing.api;
 
-import com.bank.bian.chequeprocessing.model.ControlRecord;
-import com.bank.bian.chequeprocessing.service.ControlRecordStore;
-import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import com.bank.bian.chequeprocessing.domain.Cheque;
+import com.bank.bian.chequeprocessing.domain.ChequeProcessingService;
+import com.bank.bian.chequeprocessing.domain.DomainException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -11,24 +11,22 @@ import java.util.Collection;
 import java.util.Map;
 
 /**
- * BIAN semantic API for the "Cheque Processing" service domain.
+ * BIAN semantic API for "Cheque Processing" — Phase 2a, real domain.
+ * Control record: Cheque Transaction Procedure.
+ * present / clear / return are the Execute steps of the Process pattern.
  *
- * Endpoints follow the BIAN action-term style:
- *   GET  /v1/service-domain                          → who am I (SD metadata)
- *   POST /v1/cheque-transaction-procedure/initiate                    → Initiate a control record
- *   GET  /v1/cheque-transaction-procedure                             → Retrieve (list)
- *   GET  /v1/cheque-transaction-procedure/{crId}/retrieve             → Retrieve (single)
- *   PUT  /v1/cheque-transaction-procedure/{crId}/update               → Update
- *   PUT  /v1/cheque-transaction-procedure/{crId}/control              → Control (suspend|resume|terminate)
+ * Contract: api/openapi.yaml (owned by this repo).
  */
 @RestController
 @RequestMapping("/v1")
 public class ServiceDomainController {
 
-    private final ControlRecordStore store;
+    static final String CR = "cheque-transaction-procedure";
 
-    public ServiceDomainController(ControlRecordStore store) {
-        this.store = store;
+    private final ChequeProcessingService service;
+
+    public ServiceDomainController(ChequeProcessingService service) {
+        this.service = service;
     }
 
     @GetMapping("/service-domain")
@@ -40,46 +38,61 @@ public class ServiceDomainController {
                 "functionalPattern", "Process",
                 "assetType", "Cheque Transaction",
                 "controlRecord", "Cheque Transaction Procedure",
-                "version", "0.1.0",
-                "phase", "1-shallow"
+                "version", "0.2.0",
+                "phase", "2a-deep"
         );
     }
 
-    @PostMapping("/cheque-transaction-procedure/initiate")
-    @CircuitBreaker(name = "serviceDomain")
-    public ResponseEntity<ControlRecord> initiate(@RequestBody(required = false) Map<String, Object> properties) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(store.initiate(properties));
+    // ── lodgement (Initiate) ─────────────────────────────────────────────────
+
+    public record LodgeRequest(String chequeNumber, String drawerAccountRef,
+                               String beneficiaryAccountRef, long amountMinor, String currency) {}
+
+    @PostMapping("/" + CR + "/initiate")
+    public ResponseEntity<Cheque> initiate(@RequestBody LodgeRequest req) {
+        Cheque cheque = service.lodge(req.chequeNumber(), req.drawerAccountRef(),
+                req.beneficiaryAccountRef(), req.amountMinor(),
+                req.currency() == null ? "INR" : req.currency());
+        return ResponseEntity.status(HttpStatus.CREATED).body(cheque);
     }
 
-    @GetMapping("/cheque-transaction-procedure")
-    public Collection<ControlRecord> list() {
-        return store.list();
+    @GetMapping("/" + CR)
+    public Collection<Cheque> list() {
+        return service.list();
     }
 
-    @GetMapping("/cheque-transaction-procedure/{crId}/retrieve")
-    public ResponseEntity<ControlRecord> retrieve(@PathVariable String crId) {
-        return store.retrieve(crId)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+    @GetMapping("/" + CR + "/{chequeId}/retrieve")
+    public Cheque retrieve(@PathVariable String chequeId) {
+        return service.retrieve(chequeId);
     }
 
-    @PutMapping("/cheque-transaction-procedure/{crId}/update")
-    public ResponseEntity<ControlRecord> update(@PathVariable String crId,
-                                                @RequestBody Map<String, Object> properties) {
-        return store.update(crId, properties)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
-    }
+    // ── Control: the drawer's stop order ─────────────────────────────────────
 
-    @PutMapping("/cheque-transaction-procedure/{crId}/control")
-    public ResponseEntity<?> control(@PathVariable String crId,
-                                     @RequestBody Map<String, String> body) {
-        try {
-            return store.control(crId, body.get("action"))
-                    .<ResponseEntity<?>>map(ResponseEntity::ok)
-                    .orElse(ResponseEntity.notFound().build());
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+    @PutMapping("/" + CR + "/{chequeId}/control")
+    public Cheque control(@PathVariable String chequeId, @RequestBody Map<String, String> body) {
+        String action = body.get("action");
+        if (!"stop".equalsIgnoreCase(action == null ? "" : action)) {
+            throw DomainException.invalid("UNKNOWN_ACTION", "supported control action: stop");
         }
+        return service.stop(chequeId);
+    }
+
+    // ── Execute steps of the clearing procedure ──────────────────────────────
+
+    @PostMapping("/" + CR + "/{chequeId}/present")
+    public Cheque present(@PathVariable String chequeId) {
+        return service.present(chequeId);
+    }
+
+    @PostMapping("/" + CR + "/{chequeId}/clear")
+    public Cheque clear(@PathVariable String chequeId) {
+        return service.clear(chequeId);
+    }
+
+    public record ReturnRequest(String reason) {}
+
+    @PostMapping("/" + CR + "/{chequeId}/return")
+    public Cheque returnCheque(@PathVariable String chequeId, @RequestBody ReturnRequest req) {
+        return service.returnCheque(chequeId, req.reason());
     }
 }

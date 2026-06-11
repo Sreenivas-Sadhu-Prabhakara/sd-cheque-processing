@@ -1,55 +1,48 @@
 # Cheque Processing
 
-BIAN Service Domain microservice — part of the [bian-platform](../../bian-platform/) landscape.
+BIAN Service Domain microservice — **Phase 2a DEEP build** (graduated from the golden template; see `.bian-graduated`). This is the platform's **check-clearance** domain — added to the catalog as BIAN's `Cheque Processing` SD (Payments business domain).
 
 | | |
 |---|---|
 | **Business Area** | Operations and Execution |
 | **Business Domain** | Payments |
 | **Functional Pattern** | Process |
-| **Asset Type** | Cheque Transaction |
 | **Control Record** | Cheque Transaction Procedure |
 | **K8s Namespace** | `bian-operations` |
-| **Stack** | Java 21 · Spring Boot 3 · Resilience4j · Cilium mesh |
 
-> ⚠️ **Phase 1 (shallow):** real REST API over an in-memory store. Phase 2 replaces the store with per-domain persistence and real domain logic. This repo was stamped from `bian-platform/generator` — regenerate rather than hand-editing boilerplate.
+## The clearing state machine
 
-## BIAN Semantic API
+```
+LODGED ──present──▶ PRESENTED ──clear────▶ CLEARED   (beneficiary credit emitted)
+  │                     └────────return──▶ RETURNED  (reason mandatory)
+  └──stop──▶ STOPPED   (only BEFORE presentment — after that the cheque
+                        is with the clearing house and cannot be stopped)
+```
 
-| Method | Path | BIAN action term |
-|---|---|---|
-| GET | `/v1/service-domain` | — (SD metadata) |
-| POST | `/v1/cheque-transaction-procedure/initiate` | Initiate |
-| GET | `/v1/cheque-transaction-procedure` | Retrieve (list) |
-| GET | `/v1/cheque-transaction-procedure/{crId}/retrieve` | Retrieve |
-| PUT | `/v1/cheque-transaction-procedure/{crId}/update` | Update |
-| PUT | `/v1/cheque-transaction-procedure/{crId}/control` | Control — body `{"action": "suspend"\|"resume"\|"terminate"}` |
+- **Lodgement validation**: positive amount, ISO currency, 6+-digit cheque number, and *no self-deposit* (drawer ≠ beneficiary).
+- **`cheque.cleared` carries the beneficiary credit instruction** — the flagship payments choreography. Current/Savings Account post it as a `cheque-credit` (HTTP call today, Kafka consumer when the backbone is live).
+- **`cheque.lodged` feeds Fraud Detection** (high-value lodgement signal).
+- Terminal states accept no further transitions; every illegal transition is a `409 ILLEGAL_TRANSITION`.
 
-OpenAPI UI: `/swagger-ui.html` · Health: `/actuator/health` · Metrics: `/actuator/prometheus`
+## API & contracts (owned by this repo)
 
-**API contract:** [`api/openapi.yaml`](api/openapi.yaml) — owned by **this repo** (contract-per-repo; no central contracts repo). The runtime spec at `/v3/api-docs` must stay compatible with it; Phase 2 adds contract tests that enforce this.
-
-## Run locally
+- REST: [`api/openapi.yaml`](api/openapi.yaml) · Events: [`api/events.yaml`](api/events.yaml)
+- Base: `/v1/cheque-transaction-procedure`
+- `POST /initiate` (lodge) · `POST /{id}/present` · `POST /{id}/clear` · `POST /{id}/return` · `PUT /{id}/control` (`stop`) · `GET /{id}/retrieve`
 
 ```bash
 mvn spring-boot:run
-curl localhost:8080/v1/service-domain
-
-# lifecycle smoke test
-curl -X POST localhost:8080/v1/cheque-transaction-procedure/initiate -H 'content-type: application/json' -d '{"note":"hello"}'
+CR=/v1/cheque-transaction-procedure
+ID=$(curl -s -X POST localhost:8080$CR/initiate -H 'content-type: application/json' \
+     -d '{"chequeNumber":"123456","drawerAccountRef":"CA-D","beneficiaryAccountRef":"CA-B","amountMinor":50000}' | jq -r .chequeId)
+curl -s -X POST localhost:8080$CR/$ID/present
+curl -s -X POST localhost:8080$CR/$ID/clear     # → emits cheque.cleared with the credit instruction
 ```
 
-## Build & containerize
+## Persistence
 
-```bash
-mvn -B verify
-docker build -t bian/sd-cheque-processing:0.1.0 .
-```
+In-memory port/adapter. **Postgres ready to hydrate, not wired**: [`db/schema.sql`](db/schema.sql) (+ seed). The no-self-deposit and returned-has-reason rules are DB CHECK constraints too.
 
-## Deploy (Helm → K8s with Cilium mesh)
+## Tests
 
-```bash
-helm upgrade --install sd-cheque-processing ./helm -n bian-operations
-```
-
-Exposed through the platform Gateway at path prefix `/sd-cheque-processing` (Cilium Gateway API). Mesh policy (`CiliumNetworkPolicy`) allows: gateway ingress, same-area peers, Prometheus — everything else denied.
+`mvn verify` — lodgement validation, the full happy path with event assertions, returns, and every state-machine guard (stop-after-presentment, clear-before-present, terminal immutability), plus a boot/API journey.

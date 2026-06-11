@@ -1,182 +1,183 @@
-# Design-time API contract for this service domain — owned BY this repo
-# (contract-per-repo, Netflix-style; no central contracts repo).
-# The runtime spec served at /v3/api-docs must stay compatible with this file;
-# Phase 2 adds contract tests that enforce it.
+# API contract — owned by THIS repo (contract-per-repo). Phase 2a: real domain.
 openapi: 3.0.3
 info:
   title: "Cheque Processing — BIAN Semantic API"
   description: >
-    BIAN Service Domain 'Cheque Processing' (functional pattern: Process,
-    business area: Operations and Execution) operating on the
-    'Cheque Transaction Procedure' control record.
-  version: 0.1.0
+    BIAN Service Domain 'Cheque Processing' (Process) on the 'Cheque
+    Transaction Procedure' control record — the check-clearance lifecycle:
+    LODGED → PRESENTED → CLEARED | RETURNED, with STOPPED honored only before
+    presentment. Cleared cheques emit the beneficiary credit instruction
+    consumed by the account service domains.
+  version: 0.2.0
 servers:
   - url: /
-    description: direct (in-cluster)
   - url: /sd-cheque-processing
-    description: through the platform gateway (prefix is rewritten away)
-tags:
-  - name: service-domain
-  - name: control-record
+    description: through the platform gateway
 
 paths:
   /v1/service-domain:
     get:
-      tags: [service-domain]
       operationId: getServiceDomain
       summary: Service domain metadata
       responses:
-        "200":
-          description: SD identity and BIAN classification
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ServiceDomainInfo"
+        "200": { description: SD identity and BIAN classification }
 
   /v1/cheque-transaction-procedure/initiate:
     post:
-      tags: [control-record]
-      operationId: initiate
-      summary: "BIAN action term: Initiate"
+      operationId: lodgeCheque
+      summary: "Initiate — lodge a cheque for clearing"
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/Properties"
+              type: object
+              required: [chequeNumber, drawerAccountRef, beneficiaryAccountRef, amountMinor]
+              properties:
+                chequeNumber: { type: string, pattern: "^\\d{6,}$" }
+                drawerAccountRef: { type: string, description: "account the cheque is drawn on" }
+                beneficiaryAccountRef: { type: string, description: "account to credit on clearance (≠ drawer)" }
+                amountMinor: { type: integer, format: int64, minimum: 1 }
+                currency: { type: string, pattern: "^[A-Z]{3}$", default: INR }
       responses:
         "201":
-          description: Control record created
+          description: Cheque lodged (status LODGED)
           content:
             application/json:
-              schema:
-                $ref: "#/components/schemas/ControlRecord"
+              schema: { $ref: "#/components/schemas/Cheque" }
+        "400": { $ref: "#/components/responses/Invalid" }
 
   /v1/cheque-transaction-procedure:
     get:
-      tags: [control-record]
-      operationId: list
-      summary: "BIAN action term: Retrieve (collection)"
+      operationId: listCheques
+      summary: Retrieve (collection)
       responses:
         "200":
-          description: All control records
+          description: All cheques
           content:
             application/json:
               schema:
                 type: array
-                items:
-                  $ref: "#/components/schemas/ControlRecord"
+                items: { $ref: "#/components/schemas/Cheque" }
 
-  /v1/cheque-transaction-procedure/{crId}/retrieve:
+  /v1/cheque-transaction-procedure/{chequeId}/retrieve:
     get:
-      tags: [control-record]
-      operationId: retrieve
-      summary: "BIAN action term: Retrieve"
-      parameters:
-        - $ref: "#/components/parameters/CrId"
+      operationId: retrieveCheque
+      summary: Retrieve
+      parameters: [{ $ref: "#/components/parameters/ChequeId" }]
       responses:
         "200":
-          description: The control record
+          description: The cheque
           content:
             application/json:
-              schema:
-                $ref: "#/components/schemas/ControlRecord"
-        "404":
-          description: Unknown control record id
+              schema: { $ref: "#/components/schemas/Cheque" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
-  /v1/cheque-transaction-procedure/{crId}/update:
+  /v1/cheque-transaction-procedure/{chequeId}/control:
     put:
-      tags: [control-record]
-      operationId: update
-      summary: "BIAN action term: Update"
-      parameters:
-        - $ref: "#/components/parameters/CrId"
+      operationId: stopCheque
+      summary: "Control — stop order (honored only BEFORE presentment)"
+      parameters: [{ $ref: "#/components/parameters/ChequeId" }]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/Properties"
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [stop] }
       responses:
-        "200":
-          description: Updated control record
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ControlRecord"
-        "404":
-          description: Unknown control record id
+        "200": { description: Cheque STOPPED }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/RuleViolation" }
 
-  /v1/cheque-transaction-procedure/{crId}/control:
-    put:
-      tags: [control-record]
-      operationId: control
-      summary: "BIAN action term: Control (suspend | resume | terminate)"
-      parameters:
-        - $ref: "#/components/parameters/CrId"
+  /v1/cheque-transaction-procedure/{chequeId}/present:
+    post:
+      operationId: presentCheque
+      summary: "Execute — present to the clearing house (LODGED → PRESENTED)"
+      parameters: [{ $ref: "#/components/parameters/ChequeId" }]
+      responses:
+        "200": { description: Cheque PRESENTED }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/RuleViolation" }
+
+  /v1/cheque-transaction-procedure/{chequeId}/clear:
+    post:
+      operationId: clearCheque
+      summary: "Execute — honored by clearing (PRESENTED → CLEARED); emits beneficiary credit"
+      parameters: [{ $ref: "#/components/parameters/ChequeId" }]
+      responses:
+        "200": { description: Cheque CLEARED }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/RuleViolation" }
+
+  /v1/cheque-transaction-procedure/{chequeId}/return:
+    post:
+      operationId: returnCheque
+      summary: "Execute — bounced by clearing (PRESENTED → RETURNED); reason mandatory"
+      parameters: [{ $ref: "#/components/parameters/ChequeId" }]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ControlAction"
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, example: insufficient-funds }
       responses:
-        "200":
-          description: Control applied
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ControlRecord"
-        "400":
-          description: Unknown control action
-        "404":
-          description: Unknown control record id
+        "200": { description: Cheque RETURNED }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/RuleViolation" }
 
 components:
   parameters:
-    CrId:
-      name: crId
+    ChequeId:
+      name: chequeId
       in: path
       required: true
-      schema:
-        type: string
-      description: Control record identifier (CR-…)
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: Unknown cheque
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RuleViolation:
+      description: Illegal state transition (e.g. clear before present, stop after present)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Invalid:
+      description: Bad input
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
-    ServiceDomainInfo:
+    Cheque:
       type: object
       properties:
-        serviceDomain: { type: string, example: "Cheque Processing" }
-        businessArea: { type: string, example: "Operations and Execution" }
-        businessDomain: { type: string, example: "Payments" }
-        functionalPattern: { type: string, example: "Process" }
-        assetType: { type: string, example: "Cheque Transaction" }
-        controlRecord: { type: string, example: "Cheque Transaction Procedure" }
-        version: { type: string }
-        phase: { type: string }
-
-    ControlRecord:
-      type: object
-      properties:
-        controlRecordId: { type: string, example: "CR-7f3a…" }
-        controlRecordType: { type: string, example: "Cheque Transaction Procedure" }
+        chequeId: { type: string, example: "CHQ-…" }
+        chequeNumber: { type: string }
+        drawerAccountRef: { type: string }
+        beneficiaryAccountRef: { type: string }
+        amountMinor: { type: integer, format: int64 }
+        currency: { type: string, example: INR }
         status:
           type: string
-          enum: [INITIATED, ACTIVE, SUSPENDED, TERMINATED]
-        createdAt: { type: string, format: date-time }
-        updatedAt: { type: string, format: date-time }
-        properties:
-          $ref: "#/components/schemas/Properties"
+          enum: [LODGED, PRESENTED, CLEARED, RETURNED, STOPPED]
+        returnReason: { type: string, nullable: true }
+        lodgedAt: { type: string, format: date-time }
+        presentedAt: { type: string, format: date-time, nullable: true }
+        settledAt: { type: string, format: date-time, nullable: true }
 
-    Properties:
+    Error:
       type: object
-      additionalProperties: true
-      description: Free-form domain properties (Phase 2 replaces with the real per-domain schema)
-
-    ControlAction:
-      type: object
-      required: [action]
       properties:
-        action:
-          type: string
-          enum: [suspend, resume, terminate]
+        code: { type: string, example: ILLEGAL_TRANSITION }
+        message: { type: string }
